@@ -1,109 +1,67 @@
-name: Rust
+name: build and release
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+  release:
+    types: [ created ]
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
   build:
+    name: ${{ matrix.platform.os_name }} with rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.platform.os }}
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
     strategy:
-          matrix:
-            target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, aarch64-unknown-linux-gnu]
-    runs-on: ubuntu-latest
+      fail-fast: false
+      matrix:
+        platform:
+          - os_name: Linux-aarch64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            bin: tcp-tcp-linux-arm64
+          - os_name: Linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: tcp-tcp-linux-amd64
+          - os_name: Windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: tcp-tcp-amd64.exe
+          - os_name: macOS-x86_64
+            os: macOS-latest
+            target: x86_64-apple-darwin
+            bin: tcp-tcp-darwin-amd64
+          - os_name: macOS-aarch64
+            os: macOS-latest
+            target: aarch64-apple-darwin
+            bin: tcp-tcp-darwin-arm64
+        toolchain:
+          - stable
     steps:
-      - uses: actions/checkout@v2
-
-      # Build each target
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v3
+      - name: Build binary
+        uses: houseabsolute/actions-rust-cross@v0
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-      - name: Build ${{ matrix.target }}
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --target ${{ matrix.target }} --release
-      # Done
-
-      # Create release
-      - name: Generate release tag
-        id: tag
-        run: |
-          sudo timedatectl set-timezone Asia/Ho_Chi_Minh
-          sudo date -s "$(wget -qSO- --max-redirect=0 google.com 2>&1 | grep Date: | cut -d' ' -f5-8)Z"
-          echo "release_tag=ActionBuild_${{ matrix.target }}_$(date +"%Y.%m.%d_%H-%M-%S")" >> $GITHUB_OUTPUT
-      - name: Move files
-        run: |
-          mv ./target/${{ matrix.target }}/release/tcp-tcp ./tcp-tcp-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/tcp-unix ./tcp-unix-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/unix-tcp ./unix-tcp-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/unix-unix ./unix-unix-${{ matrix.target }}
-      - name: Release
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          args: "--locked --release "
+          strip: true
+      - name: Rename binary (linux and macos)
+        run: mv target/${{ matrix.platform.target }}/release/tcp-tcp target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+        if: matrix.platform.os_name != 'Windows-x86_64'
+      - name: Rename binary (windows)
+        run: mv target/${{ matrix.platform.target }}/release/tcp-tcp.exe target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+        if: matrix.platform.os_name == 'Windows-x86_64'
+      - name: Generate SHA-256
+        run: shasum -a 256 target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }} | cut -d ' ' -f 1 > target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}.sha256
+      - name: Release binary and SHA-256 checksum to GitHub
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
+          tag_name: latest
           files: |
-            ./tcp-tcp-${{ matrix.target }}
-            ./unix-tcp-${{ matrix.target }}
-            ./tcp-unix-${{ matrix.target }}
-            ./unix-unix-${{ matrix.target }}
-      # Done release
-
-  build-darwin:
-    strategy:
-          matrix:
-            target: [x86_64-apple-darwin]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v2
-
-      # Build each target
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-          default: true
-      - name: Build ${{ matrix.target }}
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: false
-          command: build
-          args: --target ${{ matrix.target }} --release
-      # Done
-
-      # Create release
-      - name: Generate release tag
-        id: tag
-        run: |
-          echo "release_tag=ActionBuild_${{ matrix.target }}_$(date +"%Y.%m.%d_%H-%M-%S")" >> $GITHUB_OUTPUT
-      - name: Move files
-        run: |
-          mv ./target/${{ matrix.target }}/release/tcp-tcp ./tcp-tcp-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/tcp-unix ./tcp-unix-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/unix-tcp ./unix-tcp-${{ matrix.target }}
-          mv ./target/${{ matrix.target }}/release/unix-unix ./unix-unix-${{ matrix.target }}
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          files: |
-            ./tcp-tcp-${{ matrix.target }}
-            ./unix-tcp-${{ matrix.target }}
-            ./tcp-unix-${{ matrix.target }}
-            ./unix-unix-${{ matrix.target }}
-      # Done release
-
-
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
-permissions:
-  contents: write
-  pages: write
-  id-token: write
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}.sha256
